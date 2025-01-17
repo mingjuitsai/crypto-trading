@@ -1,85 +1,14 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAccount, useConnect, useDisconnect, useBalance } from "wagmi";
 import { formatEther, formatUnits } from "viem";
-
-// Types
-type CryptoPrice = {
-  symbol: string;
-  price: number;
-};
-
-type Position = {
-  id: string;
-  symbol: string;
-  type: "LONG" | "SHORT";
-  size: number;
-  entryPrice: number;
-  timestamp: number;
-};
-
-// WebSocket Hook
-function useWebSocket(symbols: string[]) {
-  const ws = useRef<WebSocket | null>(null);
-  const [prices, setPrices] = useState<CryptoPrice[]>([
-    { symbol: "BTC", price: 0 },
-    { symbol: "ETH", price: 0 },
-    { symbol: "SOL", price: 0 },
-  ]);
-
-  useEffect(() => {
-    const connectWebSocket = () => {
-      if (ws.current?.readyState === WebSocket.OPEN) {
-        ws.current.close();
-      }
-
-      ws.current = new WebSocket(
-        `wss://stream.binance.com:9443/ws/${symbols.join("@trade/")}@trade`
-      );
-
-      ws.current.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        const symbol = data.s.replace("USDT", "");
-
-        setPrices((prev) =>
-          prev.map((crypto) =>
-            crypto.symbol === symbol
-              ? { ...crypto, price: parseFloat(data.p) }
-              : crypto
-          )
-        );
-      };
-
-      ws.current.onerror = () => {
-        console.log("WebSocket error. Reconnecting...");
-        reconnect();
-      };
-
-      ws.current.onclose = () => {
-        console.log("WebSocket closed. Reconnecting...");
-        reconnect();
-      };
-    };
-
-    const reconnect = () => {
-      setTimeout(connectWebSocket, 3000);
-    };
-
-    connectWebSocket();
-
-    return () => {
-      if (ws.current) {
-        ws.current.close();
-      }
-    };
-  }, [symbols.join(",")]);
-
-  return prices;
-}
+import { useCryptoPriceWebSocket } from "./useCryptoPriceWebSocket";
+import { PositionCard, Position } from "./PositionCard";
+import { getPositionPnL } from "./getPositionPnL";
 
 // Main App Component
 function App() {
   // Market Data
-  const prices = useWebSocket(["btcusdt", "ethusdt", "solusdt"]);
+  const prices = useCryptoPriceWebSocket(["btcusdt", "ethusdt", "solusdt"]);
 
   // Trading State
   const [selectedSymbol, setSelectedSymbol] = useState("BTC");
@@ -121,24 +50,6 @@ function App() {
     positionsRef.current = positions;
   }, [positions]);
 
-  const calculatePnL = useCallback(
-    (position: Position) => {
-      const currentPrice =
-        prices.find((c) => c.symbol === position.symbol)?.price || 0;
-
-      // Calculate the quantity of crypto bought with the USDT position size
-      const cryptoQuantity = Number(position.size) / position.entryPrice;
-
-      // Calculate P/L: (current_price - entry_price) * crypto_quantity
-      const pnl =
-        position.type === "LONG"
-          ? (currentPrice - position.entryPrice) * cryptoQuantity
-          : -(currentPrice - position.entryPrice) * cryptoQuantity;
-
-      return +pnl.toFixed(2);
-    },
-    [prices]
-  );
   const openPosition = async (type: "LONG" | "SHORT") => {
     if (!isConnected || isUpdating || pendingPositionSize === 0) return;
 
@@ -182,7 +93,7 @@ function App() {
       const position = positionsRef.current.find((p) => p.id === positionId);
       if (!position) return;
 
-      const pnl = Number(calculatePnL(position));
+      const pnl = Number(getPositionPnL(prices, position));
       setVirtualUSDTBalance((prev) => prev + pnl);
       setTotalLocked((prev) => prev - Number(position.size));
       setPositions((prev) => prev.filter((p) => p.id !== positionId));
@@ -362,54 +273,14 @@ function App() {
           {positions.length > 0 ? (
             <div className="space-y-4 overflow-auto flex-1 pr-2">
               {positions.map((position) => {
-                const pnl = calculatePnL(position);
-                const isProfitable = Number(pnl) >= 0;
-                const currentPrice =
-                  prices.find((c) => c.symbol === position.symbol)?.price || 0;
-
                 return (
-                  <div
+                  <PositionCard
+                    prices={prices}
                     key={position.id}
-                    className="p-4 bg-gray-50 rounded border"
-                  >
-                    <div className="flex justify-between items-start mb-2">
-                      <p className="font-medium">{position.symbol}/USDT</p>
-                      <span
-                        className={`px-2 py-1 rounded text-sm ${
-                          position.type === "LONG"
-                            ? "bg-green-100 text-green-800"
-                            : "bg-red-100 text-red-800"
-                        }`}
-                      >
-                        {position.type}
-                      </span>
-                    </div>
-
-                    <div className="space-y-1">
-                      <p className="text-sm">Size: {position.size} USDT</p>
-                      <p className="text-sm text-gray-600">
-                        Entry: ${position.entryPrice.toFixed(2)}
-                      </p>
-                      <p className="text-sm text-gray-600">
-                        Current: ${currentPrice.toFixed(2)}
-                      </p>
-                      <p
-                        className={`text-sm font-bold ${
-                          isProfitable ? "text-green-500" : "text-red-500"
-                        }`}
-                      >
-                        P/L: {pnl.toFixed(2)} USDT
-                      </p>
-                    </div>
-
-                    <button
-                      onClick={() => closePosition(position.id)}
-                      disabled={isUpdating}
-                      className="w-full mt-3 p-2 text-sm bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
-                    >
-                      {isUpdating ? "Closing..." : "Close Position"}
-                    </button>
-                  </div>
+                    position={position}
+                    isUpdating={isUpdating}
+                    onClosePostion={closePosition}
+                  />
                 );
               })}
             </div>
